@@ -8,9 +8,10 @@ type C64 = Complex<f64>;
 const C0: C64 = C64{re: 0., im: 0.};
 const CI: C64 = C64{re: 0., im: 1.};
 const NSITES: usize = 1;
-const NSTEPS: usize = 10000;
+const NSTEPS: usize = 20000;
 const DT: f64 = 0.005;
 const GAMMA: f64 = 0.1;
+const GAMMA_LP: f64 = 0.012;
 const ALPHA: f64 = 0.0004;
 const P: f64 = 10.;
 const R: f64 = 0.016;
@@ -24,16 +25,16 @@ const J: [f64; 1] = [0.];
 const BETA: [f64; 1] = [0.];
 type PsiState = [C64; NSITES];
 type XState = [f64; NSITES];
-const PLOTNAME: &str = "test.png";
+//const PLOTNAME: &str = "semiexacttest.png";
 
 
 fn fpsi(y: C64, ydelay: &PsiState, x: f64, j: usize) -> C64 {
-    let mut delayterm = C0;
+    /*let mut delayterm = C0;
     for i in 0..NSITES {
         delayterm += J[j*NSITES + i] * (CI*BETA[j*NSITES + i]).exp() * ydelay[i];
-    }
-    return C64{re: 0.5 * R * x, im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y
-        + delayterm;
+    }*/
+    return C64{re: 0.5 * (R * x - 0.2), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y;
+        /*+ delayterm*/;
 }
 
 fn fx(x: f64, y: C64) -> f64 {
@@ -46,7 +47,7 @@ fn init_psi() -> PsiState {
     return [(); NSITES].map(|_| C64{re: rng.gen_range(0.0..0.02), im: rng.gen_range(0.0..0.2)});
 }
 
-/* fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn rksol() -> Result<(), Box<dyn std::error::Error>> {
     let mut psis = Vec::<PsiState>::with_capacity(NSTEPS);
     let mut xs = Vec::<XState>::with_capacity(NSTEPS);
     //psis.push(init_psi());
@@ -89,9 +90,8 @@ fn init_psi() -> PsiState {
         xs.push(xi);
     }
     
-    //println!("{:?}", psis.iter().map(|x| x[0].norm_sqr()).collect::<Vec<f64>>());
 
-    let root_area = BitMapBackend::new(PLOTNAME, (1920, 1080)).into_drawing_area();
+    let root_area = BitMapBackend::new("rktest.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let root_area = root_area.titled("Image Title", ("sans-serif", 60))?;
 
@@ -132,19 +132,23 @@ fn init_psi() -> PsiState {
         .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
 
     root_area.present().expect("úps");
+    println!("Made graph rktest.png");
     Ok(())
-}*/
+}
 
-fn main() {
+fn semiexact() -> Result<(), Box<dyn std::error::Error>> {
     let mut psis = Vec::<C64>::with_capacity(NSTEPS);
     let mut xs = Vec::<f64>::with_capacity(NSTEPS);
-    psis[0] = C64{re: 0.1, im: 0.03};
+    psis.push(C64{re: 0.0, im: 0.1});
+    xs.push(0.1);
     for i in 1..NSTEPS {
-        xs[i] = xs[i-1] * (-(GAMMA + R * psis[i-1].norm_sqr())*DT).exp() + P * DT;
-        psis[i] = ()
+        let yprev = psis[i-1];
+        let xprev = xs[i-1];
+        xs.push(xprev * (-(GAMMA + R * yprev.norm_sqr())*DT).exp() + P * DT);
+        psis.push(yprev * (C64{re: 0.5 * R * xs[i], im: -(OMEGA + G * xs[i] + ALPHA * yprev.norm_sqr())}*DT).exp());
     }
 
-    /*let root_area = BitMapBackend::new(PLOTNAME, (1920, 1080)).into_drawing_area();
+    let root_area = BitMapBackend::new("semiexacttest.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let root_area = root_area.titled("Image Title", ("sans-serif", 60))?;
 
@@ -163,7 +167,7 @@ fn main() {
         .draw()?;
 
     cc.draw_series(LineSeries::new(
-            (0..NSTEPS).map(|i| (i as f64 * DT, xs[i][0])), &RED))?
+            (0..NSTEPS).map(|i| (i as f64 * DT, xs[i])), &RED))?
         .label("emmmm")
         .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
 
@@ -171,7 +175,7 @@ fn main() {
         .margin(5)
         .set_all_label_area_size(50)
         .caption("|psi|^2", ("sans-serif", 40))
-        .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..20000.0)?;
+        .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..2000.0)?;
 
     cc.configure_mesh()
         .x_labels(20)
@@ -180,10 +184,16 @@ fn main() {
         .draw()?;
 
     cc.draw_series(LineSeries::new(
-            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][0].norm_sqr())), &RED))?
+            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i].norm_sqr())), &RED))?
         .label("emmmm")
         .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
 
     root_area.present().expect("úps");
-    Ok(())*/
+    println!("Made graph semiexacttest.png");
+    Ok(())
+}
+
+fn main() {
+    semiexact().ok();
+    rksol().ok();
 }
