@@ -11,7 +11,7 @@ const NSITES: usize = 1;
 const NSTEPS: usize = 20000;
 const DT: f64 = 0.005;
 const GAMMA: f64 = 0.1;
-const GAMMA_LP: f64 = 0.012;
+const GAMMA_LP: f64 = 0.2;
 const ALPHA: f64 = 0.0004;
 const P: f64 = 10.;
 const R: f64 = 0.016;
@@ -27,14 +27,21 @@ type PsiState = [C64; NSITES];
 type XState = [f64; NSITES];
 //const PLOTNAME: &str = "semiexacttest.png";
 
+#[allow(dead_code)]
+fn lerp<T>(a: T, b: T, t: f64) -> T
+where T: std::ops::Mul<f64, Output = T> + std::ops::Add<Output = T>
+{
+    return b * (t / DT) + a * (1. - t / DT);
+}
 
+#[allow(unused_variables)]
 fn fpsi(y: C64, ydelay: &PsiState, x: f64, j: usize) -> C64 {
     /*let mut delayterm = C0;
     for i in 0..NSITES {
         delayterm += J[j*NSITES + i] * (CI*BETA[j*NSITES + i]).exp() * ydelay[i];
     }*/
-    return C64{re: 0.5 * (R * x - 0.2), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y;
-        /*+ delayterm*/;
+    return C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y;
+        /*+ delayterm;*/
 }
 
 fn fx(x: f64, y: C64) -> f64 {
@@ -145,7 +152,7 @@ fn semiexact() -> Result<(), Box<dyn std::error::Error>> {
         let yprev = psis[i-1];
         let xprev = xs[i-1];
         xs.push(xprev * (-(GAMMA + R * yprev.norm_sqr())*DT).exp() + P * DT);
-        psis.push(yprev * (C64{re: 0.5 * R * xs[i], im: -(OMEGA + G * xs[i] + ALPHA * yprev.norm_sqr())}*DT).exp());
+        psis.push(yprev * (C64{re: 0.5 * (R * xprev - GAMMA_LP), im: -(OMEGA + G * xprev + ALPHA * yprev.norm_sqr())}*DT).exp());
     }
 
     let root_area = BitMapBackend::new("semiexacttest.png", (1920, 1080)).into_drawing_area();
