@@ -7,22 +7,24 @@ type C64 = Complex<f64>;
 
 const C0: C64 = C64{re: 0., im: 0.};
 const CI: C64 = C64{re: 0., im: 1.};
-const NSITES: usize = 1;
-const NSTEPS: usize = 20000;
+const NSITES: usize = 2;
+const NSTEPS: usize = 40000;
 const DT: f64 = 0.005;
 const GAMMA: f64 = 0.1;
 const GAMMA_LP: f64 = 0.2;
 const ALPHA: f64 = 0.0004;
-const P: f64 = 10.;
+const P: f64 = 5.;
 const R: f64 = 0.016;
 const G: f64 = 0.002;
 const OMEGA: f64 = 0.1;
+const D: [usize; NSITES*NSITES] = [0, 10000, 10000, 0];
 //const D: [usize; NSITES*NSITES] = [0, 12, 20, 12, 0, 8, 20, 12, 0];
 //const J: [f64; NSITES*NSITES] = [0., 0.1, 0.01,  0.1, 0., 0.1, 0.01, 0.1, 0.];
-const D: [usize; 1] = [0];
-const J: [f64; 1] = [0.];
+//const D: [usize; 1] = [0];
+const J: [f64; NSITES*NSITES] = [0., 0.01, 0.01, 0.];
+const BETA: [f64; NSITES*NSITES] = [0., 1., 1., 0.];
 //const BETA: [f64; NSITES*NSITES] = [0., 1., 1.,  1., 0., 1., 1., 1., 0.];
-const BETA: [f64; 1] = [0.];
+//const BETA: [f64; 1] = [0.];
 type PsiState = [C64; NSITES];
 type XState = [f64; NSITES];
 //const PLOTNAME: &str = "semiexacttest.png";
@@ -36,12 +38,12 @@ where T: std::ops::Mul<f64, Output = T> + std::ops::Add<Output = T>
 
 #[allow(unused_variables)]
 fn fpsi(y: C64, ydelay: &PsiState, x: f64, j: usize) -> C64 {
-    /*let mut delayterm = C0;
+    let mut delayterm = C0;
     for i in 0..NSITES {
         delayterm += J[j*NSITES + i] * (CI*BETA[j*NSITES + i]).exp() * ydelay[i];
-    }*/
-    return C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y;
-        /*+ delayterm;*/
+    }
+    return C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y
+        + delayterm;
 }
 
 fn fx(x: f64, y: C64) -> f64 {
@@ -58,7 +60,7 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
     let mut psis = Vec::<PsiState>::with_capacity(NSTEPS);
     let mut xs = Vec::<XState>::with_capacity(NSTEPS);
     //psis.push(init_psi());
-    psis.push([0.1*CI; NSITES]);
+    psis.push(init_psi());
     xs.push([0.1; NSITES]);
 
     /*let mut k1psi = [C0; NSITES];
@@ -100,11 +102,11 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
 
     let root_area = BitMapBackend::new("rktest.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
-    let root_area = root_area.titled("Image Title", ("sans-serif", 60))?;
+    let root_area = root_area.titled("|psi|^2", ("sans-serif", 60))?;
 
-    let (upper, lower) = root_area.split_vertically(540);
+    //let (upper, lower) = root_area.split_vertically(540);
 
-    let mut cc = ChartBuilder::on(&upper)
+    /*let mut cc = ChartBuilder::on(&upper)
         .margin(5)
         .set_all_label_area_size(50)
         .caption("X", ("sans-serif", 40))
@@ -119,13 +121,15 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
     cc.draw_series(LineSeries::new(
             (0..NSTEPS).map(|i| (i as f64 * DT, xs[i][0])), &RED))?
         .label("emmmm")
-        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
+        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));*/
 
-    let mut cc = ChartBuilder::on(&lower)
+    let ymax = psis.iter().map(|x| x.iter().map(|v| v.norm_sqr()).reduce(f64::max).unwrap()).reduce(f64::max).unwrap();
+    println!("{}", ymax);
+
+    let mut cc = ChartBuilder::on(&root_area)
         .margin(5)
         .set_all_label_area_size(50)
-        .caption("|psi|^2", ("sans-serif", 40))
-        .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..20000.0)?;
+        .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..(1.05*ymax))?;
 
     cc.configure_mesh()
         .x_labels(20)
@@ -137,6 +141,11 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
             (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][0].norm_sqr())), &RED))?
         .label("emmmm")
         .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
+
+    cc.draw_series(LineSeries::new(
+            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][1].norm_sqr())), &BLUE))?
+        .label("emmmm")
+        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], BLUE));
 
     root_area.present().expect("úps");
     println!("Made graph rktest.png");
@@ -201,6 +210,6 @@ fn semiexact() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    semiexact().ok();
+    //semiexact().ok();
     rksol().ok();
 }
