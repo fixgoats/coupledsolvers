@@ -24,7 +24,7 @@ const KAPPA0: f64 = 0.013; // µm^{-1}
 const HBAR: f64 = 0.6582119569; // meV ps
 const M: f64 = 0.32; // meV ps^{2} µm^{-2}
 const V: f64 = HBAR * K0 / M;
-const J0: f64 = 0.1;
+const J0: f64 = 0.01;
 const BETA: [f64; NSITES*NSITES] = [0., 1., 1., 1., 0., 1., 1., 1., 0.];
 type PsiState = [C64; NSITES];
 type XState = [f64; NSITES];
@@ -33,6 +33,14 @@ fn lerp<T>(a: T, b: T, r: f64) -> T
 where T: std::ops::Mul<f64, Output = T> + std::ops::Add<Output = T>
 {
     return b * r + a * (1. - r);
+}
+
+fn sym0traceidx<T>(i: usize, j: usize, a: &[T; NSITES*NSITES/2 - 1]) -> T
+where T: num::traits::Zero + Copy
+{
+    if i < j {return a[i*NSITES + j];}
+    if i > j {return a[j*NSITES + i];}
+    return T::zero();
 }
 
 #[allow(unused_variables)]
@@ -62,12 +70,18 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
     psis.push(init_psi());
     xs.push([0.1; NSITES]);
     let t_delay: [f64; NSITES*NSITES] = D.map(|x| x / V); // travel times between sites, time delay
-    let d_idx = t_delay.map(|x| (x / DT) as usize); // next lowest usize corresponding to time
+    let d_idx = t_delay.map(|x| (x / DT).ceil() as usize); // next lowest usize corresponding to time
                                                     // delay
     let mut idx_t = [0.; NSITES*NSITES]; // the time difference between the actual time delay and
                                          // the index approximated time delay
     for i in 0..NSITES*NSITES {
-        idx_t[i] = (d_idx[i] + 1) as f64 * DT - t_delay[i];
+        idx_t[i] = d_idx[i] as f64 * DT - t_delay[i];
+    }
+    let d_idx2 = t_delay.map(|x| (x / DT + 0.5).ceil() as usize);
+    let mut idx_t2 = [0.; NSITES*NSITES]; // difference between actual time delay and index
+                                          // approximated time delay at intermediate step.
+    for i in 0..NSITES*NSITES {
+        idx_t2[i] = d_idx2[i] as f64 * DT - t_delay[i] + 0.5 * DT;
     }
     let js = D.map(|d| if d != 0. {h1_nu(0., C64{re:K0,im:KAPPA0}).norm() * J0} else {0.});
 
@@ -91,36 +105,62 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
                                                              // recorded value after time delay to
                                                              // approximate value at time delay
             }
-            let k1 = fpsi(y, &ydelay, &js, x, j);
-            let k2 = fpsi(y + 0.5 * DT * k1, &ydelay, &js, x, j);
-            let k3 = fpsi(y + 0.5 * DT * k2, &ydelay, &js, x, j);
-            let k4 = fpsi(y + DT * k3, &ydelay, &js, x, j);
-            yi[j] = y + (DT / 6.) * (k1 + 2. * k2 + 2. * k3 + k4);
-            let k1 = fx(x, y);
-            let k2 = fx(x + 0.5 * DT * k1, y);
-            let k3 = fx(x + 0.5 * DT * k2, y);
-            let k4 = fx(x + DT * k3, y);
-            xi[j] = x + (DT / 6.) * (k1 + 2. * k2 + 2. * k3 + k4);
+            let k1psi = fpsi(y, &ydelay, &js, x, j);
+            let k1x = fx(x, y);
+            for k in 0..NSITES {
+                let d = D[j*NSITES+k];
+                if (i as f64) * DT <= d || k == j {continue} // We've already checked that the index isn't out of bounds,
+                                     // now we are only checking that we're not including the same
+                                     // condensate
+                let d_idxjk = d_idx2[j*NSITES+k];
+                let y1 = psis[i-1-d_idxjk][k];
+                let y2 = psis[i-d_idxjk][k];
+                ydelay[k] = lerp(y1, y2, idx_t2[j*NSITES+k]/DT); 
+            }
+            let k2psi = fpsi(y + 0.5 * DT * k1psi, &ydelay, &js, x + 0.5 * DT * k1x, j);
+            let k2x = fx(x + 0.5 * DT * k1x, y + 0.5 * DT * k1psi);
+            let k3psi = fpsi(y + 0.5 * DT * k2psi, &ydelay, &js, x + 0.5 * DT * k2x, j);
+            let k3x = fx(x + 0.5 * DT * k2x, y + 0.5 * DT * k3psi);
+            for k in 0..NSITES {
+                let d = D[j*NSITES+k];
+                if (i as f64) * DT <= d || k == j {continue} // We've already checked that the index isn't out of bounds,
+                                     // now we are only checking that we're not including the same
+                                     // condensate
+                let d_idxjk = d_idx[j*NSITES+k] - 1;
+                let y1 = psis[i-1-d_idxjk][k];
+                let y2 = psis[i-d_idxjk][k];
+                ydelay[k] = lerp(y1, y2, idx_t[j*NSITES+k]/DT); 
+            }
+            let k4psi = fpsi(y + DT * k3psi, &ydelay, &js, x + 0.5 * DT * k3x, j);
+            let k4x = fx(x + DT * k3x, y + DT * k3psi);
+            yi[j] = y + (DT / 6.) * (k1psi + 2. * k2psi + 2. * k3psi + k4psi);
+            xi[j] = x + (DT / 6.) * (k1x + 2. * k2x + 2. * k3x + k4x);
         }
         psis.push(yi);
         xs.push(xi);
     }
-    
 
     let root_area = BitMapBackend::new("rktest.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
-    let root_area = root_area.titled("|psi|^2", ("sans-serif", 60))?;
+    let root_area = root_area.titled("ööö", ("sans-serif", 60))?;
 
     let ymax = psis.iter().map(|x| x.iter().map(|v| v.norm_sqr()).reduce(f64::max).unwrap()).reduce(f64::max).unwrap();
 
     let mut cc = ChartBuilder::on(&root_area)
-        .margin(5)
+        .margin_top(0)
+        .margin_left(0)
+        .margin_right(0)
+        .margin_bottom(0)
         .set_all_label_area_size(50)
         .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..(1.05*ymax))?;
 
     cc.configure_mesh()
-        .x_labels(20)
+        .x_desc("t [ps]")
+        .y_desc("|ψ|^2")
+        .x_labels(10)
         .y_labels(10)
+        .axis_desc_style(("sans-serif", 40))
+        .label_style(("sans-serif", 30))
         .x_label_formatter(&|v| format!("{:.1}", v))
         .draw()?;
 
@@ -129,10 +169,10 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
         .label("emmmm")
         .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
 
-    cc.draw_series(LineSeries::new(
+    /*cc.draw_series(LineSeries::new(
             (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][1].norm_sqr())), &BLUE))?
         .label("emmmm")
-        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], BLUE));
+        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], BLUE));*/
 
     root_area.present().expect("úps");
     println!("Made graph rktest.png");
@@ -198,8 +238,8 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     //semiexact().ok();
-    //rksol().ok();
-    buchstabtest().ok();
+    rksol().ok();
+    // buchstabtest().ok();
 }
 
 fn fom(omega1: f64, omega2: f64, u: f64) -> f64 {
