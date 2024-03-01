@@ -198,14 +198,14 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     //semiexact().ok();
-    rksol().ok();
+    //rksol().ok();
+    buchstabtest().ok();
 }
 
 fn fom(omega1: f64, omega2: f64, u: f64) -> f64 {
     return (omega2 - omega1) / u;
 }
 
-#[test]
 fn buchstabtest() -> Result<(), Box<dyn std::error::Error>> {
     let mut oms = [0.; 3000];
     let dt = 0.001;
@@ -213,20 +213,46 @@ fn buchstabtest() -> Result<(), Box<dyn std::error::Error>> {
         oms[i] = 1. / (i as f64 * dt + 1.);
     }
     let t_delay = 1.;
-    let d_idx = (t_delay / dt) as usize;
-    let idx_t = (d_idx + 1) as f64 * dt - t_delay;
-    for i in 0..1999 {
-        let y = oms[1000+i];
-        let u = (1001 + i) as f64 * dt;
-        let ydelay1 = oms[1000 + i - d_idx];
-        let ydelay2 = oms[1001 + i - d_idx];
-        let ydelay = lerp(ydelay1, ydelay2, idx_t/dt);
-        let k1 = fom(y, ydelay2, u);
-        let k2 = fom(y + 0.5 * dt * k1, ydelay2, u + 0.5*dt);
-        let k3 = fom(y + 0.5 * dt * k2, ydelay2, u + 0.5*dt);
-        let k4 = fom(y + dt * k3, ydelay2, u + dt);
-        oms[1001+i] = y + (dt / 6.) * (k1 + 2. * k2 + 2. * k3 + k4);
+    let d_idx = (t_delay / dt).ceil() as usize;
+    let d_idx2 = (t_delay / dt - 0.5).ceil() as usize;
+    let idx_t = d_idx as f64 * dt - t_delay; // amount of time between approximate index
+                                                   // time and actual delay time, for
+                                                   // interpolation. It would be possible to divide
+                                                   // through by dt here for a tiny bit of extra
+                                                   // performance, but that would make it even less
+                                                   // clear what's happening here and the optimizer
+                                                   // probably takes care of it anyway, and even if
+                                                   // it doesn't the difference is probably
+                                                   // negligible.
+    println!("{}", idx_t);
+    let idx_t2 = (d_idx2 as f64 + 0.5) * dt - t_delay;
+    for i in 1000..2999 {
+        let y = oms[i];
+        let u = i as f64 * dt + 1.;
+        let mut ydelay1 = oms[i - d_idx];
+        let mut ydelay2 = oms[i + 1 - d_idx];
+        let mut ydelay = lerp(ydelay1, ydelay2, idx_t/dt);
+        let k1 = fom(y, ydelay, u);
+        ydelay1 = oms[i  - d_idx2];
+        ydelay2 = oms[i + 1 - d_idx2];
+        ydelay = lerp(ydelay1, ydelay2, idx_t2 / dt);
+        let k2 = fom(y + 0.5 * dt * k1, ydelay, u + 0.5 * dt);
+        let k3 = fom(y + 0.5 * dt * k2, ydelay, u + 0.5 * dt);
+        ydelay1 = oms[i + 1 - d_idx];
+        ydelay2 = oms[i + 2 - d_idx];
+        ydelay = lerp(ydelay1, ydelay2, idx_t / dt);
+        let k4 = fom(y + dt * k3, ydelay, u + dt);
+        oms[i + 1] = y + (dt / 6.) * (k1 + 2. * k2 + 2. * k3 + k4);
     }
+    /*for i in 1000..2999 {
+        let y = oms[i];
+        let ydelay1 = oms[i - d_idx];
+        let ydelay2 = oms[i + 1 - d_idx];
+        let k1 = fom(y, ydelay1, i as f64 * dt + 1.);
+        let k2 = fom(y + dt*k1, ydelay2, (i+1) as f64 * dt + 1.);
+        oms[i+1] = y + 0.5 * dt * (k1 + k2);
+    }*/
+    println!("{}", oms[1001]);
 
     let root_area = BitMapBackend::new("buchstabtest.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
@@ -235,7 +261,7 @@ fn buchstabtest() -> Result<(), Box<dyn std::error::Error>> {
     let mut cc = ChartBuilder::on(&root_area)
         .margin(5)
         .set_all_label_area_size(50)
-        .build_cartesian_2d(1.0..(dt*1000.+1.) as f64, 0.4..1.1)?;
+        .build_cartesian_2d(1.0..(dt*3000.+1.) as f64, 0.4..1.1)?;
 
     cc.configure_mesh()
         .x_labels(20)
@@ -244,11 +270,10 @@ fn buchstabtest() -> Result<(), Box<dyn std::error::Error>> {
         .draw()?;
 
     cc.draw_series(LineSeries::new(
-            (0..1000).map(|i| (i as f64 * dt + 1., oms[i])), &RED))?
+            (0..3000).map(|i| (i as f64 * dt + 1., oms[i])), &RED))?
         .label("emmmm")
         .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
 
     root_area.present().expect("úps");
-    println!("Made graph buchstabtest.png");
     Ok(())
 }
