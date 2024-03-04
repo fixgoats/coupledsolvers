@@ -70,7 +70,7 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
     psis.push(init_psi());
     xs.push([0.1; NSITES]);
     let t_delay: [f64; NSITES*NSITES] = D.map(|x| x / V); // travel times between sites, time delay
-    let d_idx = t_delay.map(|x| (x / DT).ceil() as usize); // next lowest usize corresponding to time
+    let d_idx = t_delay.map(|x| (x / DT).ceil() as usize); // next highest usize corresponding to time
                                                     // delay
     let mut idx_t = [0.; NSITES*NSITES]; // the time difference between the actual time delay and
                                          // the index approximated time delay
@@ -142,38 +142,46 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
 
     let root_area = BitMapBackend::new("rktest.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
-    let root_area = root_area.titled("ööö", ("sans-serif", 60))?;
+    let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
 
     let ymax = psis.iter().map(|x| x.iter().map(|v| v.norm_sqr()).reduce(f64::max).unwrap()).reduce(f64::max).unwrap();
 
     let mut cc = ChartBuilder::on(&root_area)
         .margin_top(0)
         .margin_left(0)
-        .margin_right(0)
-        .margin_bottom(0)
-        .set_all_label_area_size(50)
+        .margin_right(30)
+        .margin_bottom(30)
+        .x_label_area_size(70)
+        .y_label_area_size(90)
         .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..(1.05*ymax))?;
 
     cc.configure_mesh()
+        .x_label_formatter(&|x| format!("{:.1}", *x))
+        .y_label_formatter(&|y| format!("{:.1}", *y))
         .x_desc("t [ps]")
         .y_desc("|ψ|^2")
         .x_labels(10)
         .y_labels(10)
         .axis_desc_style(("sans-serif", 40))
         .label_style(("sans-serif", 30))
-        .x_label_formatter(&|v| format!("{:.1}", v))
         .draw()?;
 
     cc.draw_series(LineSeries::new(
-            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][0].norm_sqr())), &RED))?
-        .label("emmmm")
-        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], RED));
+            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][0].norm_sqr())), RGBColor(255, 0, 0)))?
+        .label("Site 1")
+        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+40, y)], ShapeStyle{color: RGBAColor(255, 0, 0, 1.0),
+                                                                             filled: true,
+                                                                             stroke_width: 2}));
 
-    /*cc.draw_series(LineSeries::new(
-            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][1].norm_sqr())), &BLUE))?
-        .label("emmmm")
-        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+20, y)], BLUE));*/
 
+    cc.draw_series(LineSeries::new(
+            (0..NSTEPS).map(|i| (i as f64 * DT, psis[i][1].norm_sqr())), RGBColor(0,0,255)))?
+        .label("Site 2")
+        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+40, y)], ShapeStyle{color: RGBAColor(0, 0, 255, 1.0),
+                                                                             filled: true,
+                                                                             stroke_width: 2}));
+
+    cc.configure_series_labels().legend_area_size(75).label_font(("sans-serif", 30)).border_style(BLACK).draw()?;
     root_area.present().expect("úps");
     println!("Made graph rktest.png");
     Ok(())
