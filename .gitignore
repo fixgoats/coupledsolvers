@@ -1,3 +1,5 @@
 *.png
 *.svg
 /target
+*.bin
+*.json

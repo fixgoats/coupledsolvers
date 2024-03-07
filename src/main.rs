@@ -4,7 +4,9 @@ use plotters::prelude::*;
 use scilib::math::bessel::h1_nu;
 use serde::{Serialize, Deserialize};
 use clap::Parser;
-use std::fs::{File,OpenOptions};
+use std::fs::{OpenOptions, File, read};
+use std::io::{BufWriter, Write};
+use serde_binary::binary_stream::Endian;
 
 type C64 = Complex<f64>;
 // type C32 = Complex<f32>;
@@ -28,7 +30,7 @@ const KAPPA0: f64 = 0.013; // µm^{-1}
 const HBAR: f64 = 0.6582119569; // meV ps
 const M: f64 = 0.32; // meV ps^{2} µm^{-2}
 const V: f64 = HBAR * K0 / M;
-const J0: f64 = 0.01;
+const J0: f64 = 100.;
 const BETA: [f64; NSITES*NSITES] = [0., 1., 1., 1., 0., 1., 1., 1., 0.];
 
 #[derive(Parser, Debug)]
@@ -36,20 +38,14 @@ const BETA: [f64; NSITES*NSITES] = [0., 1., 1., 1., 0., 1., 1., 1., 0.];
 struct Args {
     #[arg(short, long, default_value_t = false)]
     cached: bool,
+    #[arg(short, long, default_value_t = false)]
+    debugneighbours: bool,
 }
 
 fn lerp<T>(a: T, b: T, r: f64) -> T
 where T: std::ops::Mul<f64, Output = T> + std::ops::Add<Output = T>
 {
     b * r + a * (1. - r)
-}
-
-fn sym0traceidx<T>(i: usize, j: usize, a: &[T; NSITES*NSITES/2 - 1]) -> T
-where T: num::traits::Zero + Copy
-{
-    if i < j {return a[i*NSITES + j];}
-    if i > j {return a[j*NSITES + i];}
-    T::zero()
 }
 
 struct DelayPsi {
@@ -171,33 +167,35 @@ fn neighbourtest() {
 
 // Besides cleanliness, this is pulled into a separate function so that the serialized byte vector is freed
 // when it goes out of scope, thus saving memory
-fn save_neighbours(v: &Vec<u8>) -> std::io::Result<()> {
-    let serialized = serde_binary::to_vec(&v, serde_binary::Endian::Little);
+fn save_neighbours(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
+    let serialized = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize neighbours.");
     let mut file = OpenOptions::new()
         .create(true).write(true).open("neighbours.bin")?;
-    file.write_all(&serialized); 
+    file.write_all(&serialized[..])?; 
     Ok(())
 }
 
-fn read_neighbours() -> Vec<Vec<Neighbour>> {
-    let bleh = File::open("neighbours.bin").expect("no file found");
-    let neighbours = serde_binary::from_vec::<Vec<Vec<Neighbour>>>(&bleh).unwrap();
+fn save_neighbours_json(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
+    let f = File::create("neighbours.json")?;
+    let mut writer = BufWriter::new(f);
+    serde_json::to_writer(&mut writer, v).expect("Couldn't serialize neighbours.");
+    writer.flush()?;
+    Ok(())
 }
 
-fn rksol() -> Result<(), Box<dyn std::error::Error>> {
-    let points = p3filter(20., 3.9);
+// Also in a separate function so that the byte vector goes out of scope
+fn read_neighbours() -> Vec<Vec<Neighbour>> {
+    let bleh = read("neighbours.bin").expect("no file found");
+    serde_binary::from_vec::<Vec<Vec<Neighbour>>>(bleh, Endian::Little).expect("Cache file has incorrect format")
+}
+
+fn rksol(points: &Vec<C64>, neighbours: &Vec<Vec<Neighbour>>) -> (Vec<Vec<C64>>, Vec<Vec<f64>>) {
     let nsites = points.len();
     let mut psis = Vec::<Vec<C64>>::with_capacity(NSTEPS);
     let mut xs = Vec::<Vec<f64>>::with_capacity(NSTEPS);
     psis.push(init_psi(nsites));
     xs.push(vec![0.01; nsites]);
-    let args = Args::parse();
-    let neighbours = match args.cache {
-        true => 
-    }
-    let neighbours = find_neighbours(&points, 20.);
-    println!("found neighbours");
-    save_neighbours(&neighbours);
+    
 
 
     for i in 1..NSTEPS {
@@ -252,7 +250,10 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
         psis.push(yi);
         xs.push(xi);
     }
+    (psis, xs)
+}
 
+fn plotpsisq(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>>{
     let root_area = BitMapBackend::new("rktestpsisq.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
@@ -297,7 +298,10 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
     cc.configure_series_labels().legend_area_size(75).label_font(("sans-serif", 30)).border_style(BLACK).draw()?;
     root_area.present().expect("úps");
     println!("Made graph rktestpsisq.png");
+    Ok(())
+}
 
+fn plotargs(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
     let root_area = BitMapBackend::new("rktestargs.png", (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
@@ -345,7 +349,27 @@ fn rksol() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     //semiexact().ok();
-    rksol().ok();
+    let points = p3filter(20., 3.9);
+    let args = Args::parse();
+    if args.debugneighbours {
+        let tmp = find_neighbours(&points, 20.);
+        save_neighbours_json(&tmp).expect("Couldn't save neighbours.");
+        return;
+    }
+    let neighbours = match args.cached {
+        true => {
+            println!("Using cached neighbours.");
+            read_neighbours()},
+        false => {
+            let tmp = find_neighbours(&points, 20.);
+            println!("Found neighbours.");
+            save_neighbours(&tmp).expect("Couldn't save neighbours.");
+            tmp
+        }
+    };
+    let (psis, xs) = rksol(&points, &neighbours);
+    plotpsisq(&psis).ok();
+    plotargs(&psis).ok();
     // plotp3().ok();
     // neighbourtest();
     // buchstabtest().o

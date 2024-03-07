@@ -15,4 +15,5 @@ scilib = "1.0.0"
 rustfft = "6.2.0"
 serde = {version = "1.0", features = ["derive"]}
 serde-binary = "0.5"
+serde_json = "1.0"
 clap = {version = "4.5.2", features = ["derive", "unicode"]}
