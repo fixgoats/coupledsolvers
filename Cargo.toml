@@ -7,9 +7,12 @@ edition = "2021"
 
 [dependencies]
 nalgebra = "0.32.3"
-num = "0.4.1"
+num = {version = "0.4.1", features = ["serde"]}
 ode_solvers = "0.4.0"
 plotters = "0.3.5"
 rand = "0.8.5"
 scilib = "1.0.0"
 rustfft = "6.2.0"
+serde = {version = "1.0", features = ["derive"]}
+serde-binary = "0.5"
+clap = {version = "4.5.2", features = ["derive", "unicode"]}
