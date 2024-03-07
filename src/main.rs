@@ -1,4 +1,5 @@
 use num::Complex;
+use num::traits::Pow;
 use rand::Rng;
 use plotters::prelude::*;
 use scilib::math::bessel::h1_nu;
@@ -30,8 +31,13 @@ const KAPPA0: f64 = 0.013; // µm^{-1}
 const HBAR: f64 = 0.6582119569; // meV ps
 const M: f64 = 0.32; // meV ps^{2} µm^{-2}
 const V: f64 = HBAR * K0 / M;
-const J0: f64 = 100.;
+const J0: f64 = 0.01;
 const BETA: [f64; NSITES*NSITES] = [0., 1., 1., 1., 0., 1., 1., 1., 0.];
+
+fn factorial(n: i32) -> i32 {
+    if n == 0  {return 1;}
+    (1..n+1).reduce(|y, i| y*i).unwrap()
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -40,6 +46,8 @@ struct Args {
     cached: bool,
     #[arg(short, long, default_value_t = false)]
     debugneighbours: bool,
+    #[arg(short, long, default_value_t = false)]
+    besseltest: bool,
 }
 
 fn lerp<T>(a: T, b: T, r: f64) -> T
@@ -60,8 +68,7 @@ fn fpsi(y: C64, ydelay: &Vec<DelayPsi>, x: f64) -> C64 {
     for y in ydelay {
         delayterm += y.j * y.beta * y.psi;
     }
-    C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y
-        + delayterm
+    C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y + delayterm
 }
 
 fn fx(x: f64, y: C64) -> f64 {
@@ -110,7 +117,7 @@ fn find_neighbours(points: &Vec<C64>, r: f64) -> Vec<Vec<Neighbour>> {
                 let d2_idx = (delay / DT - 0.5).ceil() as usize;
                 let dt2 = (d2_idx as f64) * DT - delay + 0.5 * DT;
                 let jij = J0*h1_nu(0., (K0*C1 + 0.001*CI)* delay).norm();
-                let beta = C0;
+                let beta = C1;
                 neighbours[i].push(Neighbour{
                     idx: j,
                     d_idx,
@@ -122,7 +129,7 @@ fn find_neighbours(points: &Vec<C64>, r: f64) -> Vec<Vec<Neighbour>> {
                 });
             }
         }
-        neighbours[i].shrink_to_fit();
+        //neighbours[i].shrink_to_fit();
     }
     neighbours
 }
@@ -178,7 +185,7 @@ fn save_neighbours(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
 fn save_neighbours_json(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
     let f = File::create("neighbours.json")?;
     let mut writer = BufWriter::new(f);
-    serde_json::to_writer(&mut writer, v).expect("Couldn't serialize neighbours.");
+    serde_json::to_writer_pretty(&mut writer, v).expect("Couldn't serialize neighbours.");
     writer.flush()?;
     Ok(())
 }
@@ -268,6 +275,7 @@ fn plotpsisq(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>>{
         .x_label_area_size(70)
         .y_label_area_size(90)
         .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..(1.05*ymax))?;
+    println!("komst hingað");
 
     cc.configure_mesh()
         .x_label_formatter(&|x| format!("{:.1}", *x))
@@ -351,6 +359,11 @@ fn main() {
     //semiexact().ok();
     let points = p3filter(20., 3.9);
     let args = Args::parse();
+    if args.besseltest {
+        println!("{}", factorial(2));
+        println!("{}", testbessel());
+        return;
+    }
     if args.debugneighbours {
         let tmp = find_neighbours(&points, 20.);
         save_neighbours_json(&tmp).expect("Couldn't save neighbours.");
