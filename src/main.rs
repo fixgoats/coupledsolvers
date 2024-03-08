@@ -25,29 +25,26 @@ const P: f64 = 5.; // ps^{-1}
 const R: f64 = 0.016; // ps^{-1}
 const G: f64 = 0.002; // ps^{-1}
 const OMEGA: f64 = 1.22; // ps^{-1}
-const D: [f64; NSITES*NSITES] = [0., 20.0, 20.0, 20.0, 0., 20.0, 20.0, 20.0, 0.];
 const K0: f64 = 1.62; // µm^{-1}
 const KAPPA0: f64 = 0.013; // µm^{-1}
 const HBAR: f64 = 0.6582119569; // meV ps
 const M: f64 = 0.32; // meV ps^{2} µm^{-2}
 const V: f64 = HBAR * K0 / M;
 const J0: f64 = 0.01;
-const BETA: [f64; NSITES*NSITES] = [0., 1., 1., 1., 0., 1., 1., 1., 0.];
-
-fn factorial(n: i32) -> i32 {
-    if n == 0  {return 1;}
-    (1..n+1).reduce(|y, i| y*i).unwrap()
-}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
 struct Args {
-    #[arg(short, long, default_value_t = false)]
-    cached: bool,
-    #[arg(short, long, default_value_t = false)]
-    debugneighbours: bool,
-    #[arg(short, long, default_value_t = false)]
-    besseltest: bool,
+    #[arg(short, long, default_value_t = ESTR)]
+    cachedneighbours: String,
+    #[arg(short, long, default_value_t = ESTR)]
+    debugneighbours: String,
+    #[arg(short, long, default_value_t = ESTR)]
+    plotgeometry: String,
+    #[arg(short, long, default_value_t = ESTR)]
+    saveresults: String,
+    #[arg(short, long, default_value_t = ESTR)]
+    cachedresults: String,
 }
 
 fn lerp<T>(a: T, b: T, r: f64) -> T
@@ -129,7 +126,7 @@ fn find_neighbours(points: &Vec<C64>, r: f64) -> Vec<Vec<Neighbour>> {
                 });
             }
         }
-        //neighbours[i].shrink_to_fit();
+        neighbours[i].shrink_to_fit();
     }
     neighbours
 }
@@ -174,16 +171,25 @@ fn neighbourtest() {
 
 // Besides cleanliness, this is pulled into a separate function so that the serialized byte vector is freed
 // when it goes out of scope, thus saving memory
-fn save_neighbours(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
+fn save_neighbours(name: &String, v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
     let serialized = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize neighbours.");
     let mut file = OpenOptions::new()
-        .create(true).write(true).open("neighbours.bin")?;
+        .create(true).write(true).open(name.as_str())?;
     file.write_all(&serialized[..])?; 
     Ok(())
 }
 
-fn save_neighbours_json(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
-    let f = File::create("neighbours.json")?;
+fn save_results(name: &String, psis: &Vec<Vec<C64>>, xs: &Vec<Vec<f64>>) -> std::io::Result<()> {
+    let serializedpsis = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize psis.");
+    let serializedxs = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize xs.");
+    let mut file = OpenOptions::new()
+        .create(true).write(true).open(name.as_str())?;
+    file.write_all(&serializedpsis[..])?; 
+    Ok(())
+}
+
+fn save_neighbours_json(name: &String, v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
+    let f = File::create(name.as_str())?;
     let mut writer = BufWriter::new(f);
     serde_json::to_writer_pretty(&mut writer, v).expect("Couldn't serialize neighbours.");
     writer.flush()?;
@@ -191,14 +197,18 @@ fn save_neighbours_json(v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
 }
 
 // Also in a separate function so that the byte vector goes out of scope
-fn read_neighbours() -> Vec<Vec<Neighbour>> {
-    let bleh = read("neighbours.bin").expect("no file found");
+fn read_neighbours(name: &String) -> Vec<Vec<Neighbour>> {
+    let bleh = read(name.as_str()).expect("no file found");
     serde_binary::from_vec::<Vec<Vec<Neighbour>>>(bleh, Endian::Little).expect("Cache file has incorrect format")
 }
 
 fn rksol(points: &Vec<C64>, neighbours: &Vec<Vec<Neighbour>>) -> (Vec<Vec<C64>>, Vec<Vec<f64>>) {
     let nsites = points.len();
-    let mut psis = Vec::<Vec<C64>>::with_capacity(NSTEPS);
+    let mut psis = Vec::<Vec<C64>>::with_capacity(NSTEPS); // "initializing" with a certain capacity
+                                                           // makes pushing to the vector within
+                                                           // that capacity cost the same as
+                                                           // writing to it, but skips setting
+                                                           // it to specific values.
     let mut xs = Vec::<Vec<f64>>::with_capacity(NSTEPS);
     psis.push(init_psi(nsites));
     xs.push(vec![0.01; nsites]);
@@ -275,7 +285,6 @@ fn plotpsisq(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>>{
         .x_label_area_size(70)
         .y_label_area_size(90)
         .build_cartesian_2d(0.0..DT*NSTEPS as f64, -0.1..(1.05*ymax))?;
-    println!("komst hingað");
 
     cc.configure_mesh()
         .x_label_formatter(&|x| format!("{:.1}", *x))
@@ -356,36 +365,31 @@ fn plotargs(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
 
 
 fn main() {
-    //semiexact().ok();
     let points = p3filter(20., 3.9);
     let args = Args::parse();
-    if args.besseltest {
-        println!("{}", factorial(2));
-        println!("{}", testbessel());
-        return;
-    }
-    if args.debugneighbours {
+    if args.debugneighbours.len() != 0 {
         let tmp = find_neighbours(&points, 20.);
-        save_neighbours_json(&tmp).expect("Couldn't save neighbours.");
+        save_neighbours_json(&args.debugneighbours, &tmp).expect("Couldn't save neighbours.");
         return;
     }
-    let neighbours = match args.cached {
-        true => {
-            println!("Using cached neighbours.");
-            read_neighbours()},
-        false => {
+    if args.cachedresults.len() != 0 {
+        let (psis, xs) = read_results(&args.cachedresults);
+    }
+    let neighbours = match args.cachedneighbours.len() {
+        0 => {
             let tmp = find_neighbours(&points, 20.);
             println!("Found neighbours.");
-            save_neighbours(&tmp).expect("Couldn't save neighbours.");
+            save_neighbours(&args.cachedneighbours, &tmp).expect("Couldn't save neighbours.");
             tmp
+        },
+        _ => {
+            println!("Using cached neighbours.");
+            read_neighbours(&args.cachedneighbours)
         }
     };
     let (psis, xs) = rksol(&points, &neighbours);
-    plotpsisq(&psis).ok();
-    plotargs(&psis).ok();
-    // plotp3().ok();
-    // neighbourtest();
-    // buchstabtest().o
+    plotpsisq(&psis).expect("Couldn't plot square norm.");
+    plotargs(&psis).expect("Couldn't plot phase difference.");
 }
 
 fn fom(omega1: f64, omega2: f64, u: f64) -> f64 {
