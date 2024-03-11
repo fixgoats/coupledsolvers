@@ -1,23 +1,24 @@
 use num::Complex;
-use num::traits::Pow;
 use rand::Rng;
 use plotters::prelude::*;
 use scilib::math::bessel::h1_nu;
 use serde::{Serialize, Deserialize};
 use clap::Parser;
-use std::fs::{OpenOptions, File, read};
+use std::fs::{create_dir, read, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use serde_binary::binary_stream::Endian;
+use rustfft::{Fft, FftDirection, algorithm::Radix4};
 
 type C64 = Complex<f64>;
 // type C32 = Complex<f32>;
 
+const PI: f64 = 3.14159265358979;
 const C0: C64 = C64{re: 0., im: 0.};
 const C1: C64 = C64{re: 1., im: 0.};
 const CI: C64 = C64{re: 0., im: 1.};
 const NSITES: usize = 3;
-const NSTEPS: usize = 40000;
-const DT: f64 = 0.005; // ps
+const NSTEPS: usize = 20000;
+const DT: f64 = 0.01; // ps
 const GAMMA: f64 = 0.1; // ps^{-1}
 const GAMMA_LP: f64 = 0.2; // ps^{-1}
 const ALPHA: f64 = 0.0004; // ps^{-1}
@@ -31,6 +32,9 @@ const HBAR: f64 = 0.6582119569; // meV ps
 const M: f64 = 0.32; // meV ps^{2} µm^{-2}
 const V: f64 = HBAR * K0 / M;
 const J0: f64 = 0.01;
+const ESTR: String = String::new();
+const EMAX: f64 = HBAR * PI / DT;
+const DE: f64 = 2. * EMAX / 4096.;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -41,8 +45,16 @@ struct Args {
     debugneighbours: String,
     #[arg(short, long, default_value_t = ESTR)]
     plotgeometry: String,
-    #[arg(short, long, default_value_t = ESTR)]
+    #[arg(short, long, default_value_t = String::from("results"))]
     saveresults: String,
+    #[arg(short, long, default_value_t = String::from("neighbours"))]
+    saveneighbours: String,
+    #[arg(short, long, default_value_t = String::from("psisq"))]
+    psisqname: String,
+    #[arg(short, long, default_value_t = String::from("psiargs"))]
+    psiargsname: String,
+    #[arg(short, long, default_value_t = String::from("spectrum"))]
+    spectrumname: String,
     #[arg(short, long, default_value_t = ESTR)]
     cachedresults: String,
 }
@@ -60,12 +72,9 @@ struct DelayPsi {
 }
 
 #[allow(unused_variables)]
-fn fpsi(y: C64, ydelay: &Vec<DelayPsi>, x: f64) -> C64 {
-    let mut delayterm = C0;
-    for y in ydelay {
-        delayterm += y.j * y.beta * y.psi;
-    }
-    C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y + delayterm
+fn fpsi(y: C64, delayterm: C64, x: f64) -> C64 {
+    C64{re: 0.5 * (R * x - GAMMA_LP), im: -(OMEGA + G * x + ALPHA * y.norm_sqr())} * y
+        + delayterm
 }
 
 fn fx(x: f64, y: C64) -> f64 {
@@ -163,33 +172,20 @@ fn plotp3() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn neighbourtest() {
-    let points = p3filter(20., 3.9);
-    let neighbours = find_neighbours(&points, 20.);
-    println!("length: {}, should be {}\nlength of random index {}", neighbours.len(), points.len(), neighbours[6].len())
-}
-
 // Besides cleanliness, this is pulled into a separate function so that the serialized byte vector is freed
 // when it goes out of scope, thus saving memory
 fn save_neighbours(name: &String, v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
+    let path = format!(".cache/{name}.bin");
     let serialized = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize neighbours.");
     let mut file = OpenOptions::new()
-        .create(true).write(true).open(name.as_str())?;
+        .create(true).write(true).open(path.as_str())?;
     file.write_all(&serialized[..])?; 
     Ok(())
 }
 
-fn save_results(name: &String, psis: &Vec<Vec<C64>>, xs: &Vec<Vec<f64>>) -> std::io::Result<()> {
-    let serializedpsis = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize psis.");
-    let serializedxs = serde_binary::to_vec(&v, Endian::Little).expect("Couldn't serialize xs.");
-    let mut file = OpenOptions::new()
-        .create(true).write(true).open(name.as_str())?;
-    file.write_all(&serializedpsis[..])?; 
-    Ok(())
-}
-
 fn save_neighbours_json(name: &String, v: &Vec<Vec<Neighbour>>) -> std::io::Result<()> {
-    let f = File::create(name.as_str())?;
+    let path = format!(".cache/{name}.json");
+    let f = File::create(path.as_str())?;
     let mut writer = BufWriter::new(f);
     serde_json::to_writer_pretty(&mut writer, v).expect("Couldn't serialize neighbours.");
     writer.flush()?;
@@ -198,22 +194,36 @@ fn save_neighbours_json(name: &String, v: &Vec<Vec<Neighbour>>) -> std::io::Resu
 
 // Also in a separate function so that the byte vector goes out of scope
 fn read_neighbours(name: &String) -> Vec<Vec<Neighbour>> {
-    let bleh = read(name.as_str()).expect("no file found");
+    let path = format!(".cache/{name}.bin");
+    let bleh = read(path.as_str()).expect("no file found");
     serde_binary::from_vec::<Vec<Vec<Neighbour>>>(bleh, Endian::Little).expect("Cache file has incorrect format")
 }
 
-fn rksol(points: &Vec<C64>, neighbours: &Vec<Vec<Neighbour>>) -> (Vec<Vec<C64>>, Vec<Vec<f64>>) {
-    let nsites = points.len();
+fn save_results(name: &String, psis: &Vec<Vec<C64>>, xs: &Vec<Vec<f64>>) -> std::io::Result<()> {
+    let path = format!(".cache/{name}.bin");
+    let serializedpsis = serde_binary::to_vec(&(psis, xs), Endian::Little).expect("Couldn't serialize results.");
+    let mut file = OpenOptions::new()
+        .create(true).write(true).open(path.as_str())?;
+    file.write_all(&serializedpsis[..])?; 
+    Ok(())
+}
+
+fn read_results(name: &String) -> (Vec<Vec<C64>>, Vec<Vec<f64>>) {
+    let path = format!(".cache/{name}.bin");
+    let bleh = read(path.as_str()).expect("no file found");
+    serde_binary::from_vec::<(Vec<Vec<C64>>, Vec<Vec<f64>>)>(bleh, Endian::Little).expect("Cache file has incorrect format")
+}
+
+fn rksol(neighbours: &Vec<Vec<Neighbour>>) -> (Vec<Vec<C64>>, Vec<Vec<f64>>) {
+    let nsites = neighbours.len();
     let mut psis = Vec::<Vec<C64>>::with_capacity(NSTEPS); // "initializing" with a certain capacity
                                                            // makes pushing to the vector within
                                                            // that capacity cost the same as
                                                            // writing to it, but skips setting
                                                            // it to specific values.
     let mut xs = Vec::<Vec<f64>>::with_capacity(NSTEPS);
-    psis.push(init_psi(nsites));
+    psis.push(init_psi(nsites)); // randomly initialize the states
     xs.push(vec![0.01; nsites]);
-    
-
 
     for i in 1..NSTEPS {
         let mut yi = Vec::with_capacity(nsites);
@@ -221,45 +231,34 @@ fn rksol(points: &Vec<C64>, neighbours: &Vec<Vec<Neighbour>>) -> (Vec<Vec<C64>>,
         for j in 0..nsites {
             let y = psis[i-1][j];
             let x = xs[i-1][j];
-            let mut ydelay = Vec::with_capacity(neighbours[j].len());
+            let mut delayterm = C0;
             for n in &neighbours[j] {
                 if i < n.d_idx {continue;}
                 let y1 = psis[i-n.d_idx][n.idx];
                 let y2 = psis[i-n.d_idx+1][n.idx];
-                ydelay.push(DelayPsi{
-                    psi: lerp(y1, y2, n.dt / DT),
-                    j: n.j,
-                    beta: n.beta
-                });
+                delayterm += n.j * n.beta * lerp(y1, y2, n.dt / DT)
             }
-            let k1psi = fpsi(y, &ydelay, x);
+            let k1psi = fpsi(y, delayterm, x);
             let k1x = fx(x, y);
-            ydelay.clear();
+            delayterm = C0;
             for n in &neighbours[j] {
                 if i < n.d_idx {continue;}
                 let y1 = psis[i-n.d2_idx][n.idx];
                 let y2 = psis[i-n.d2_idx+1][n.idx];
-                ydelay.push(DelayPsi{
-                    psi: lerp(y1, y2, n.dt2 / DT),
-                    j: n.j,
-                    beta: n.beta
-                });
+                delayterm += n.j * n.beta * lerp(y1, y2, n.dt2 / DT);
             }
-            let k2psi = fpsi(y + 0.5 * DT * k1psi, &ydelay, x + 0.5 * DT * k1x);
+            let k2psi = fpsi(y + 0.5 * DT * k1psi, delayterm, x + 0.5 * DT * k1x);
             let k2x = fx(x + 0.5 * DT * k1x, y + 0.5 * DT * k1psi);
-            let k3psi = fpsi(y + 0.5 * DT * k2psi, &ydelay, x + 0.5 * DT * k2x);
+            let k3psi = fpsi(y + 0.5 * DT * k2psi, delayterm, x + 0.5 * DT * k2x);
             let k3x = fx(x + 0.5 * DT * k2x, y + 0.5 * DT * k3psi);
+            delayterm = C0;
             for n in &neighbours[j] {
                 if i < n.d_idx {continue;}
                 let y1 = psis[i-n.d_idx+1][n.idx];
                 let y2 = psis[i-n.d_idx+2][n.idx];
-                ydelay.push(DelayPsi{
-                    psi: lerp(y1, y2, n.dt / DT),
-                    j: n.j,
-                    beta: n.beta
-                });
+                delayterm += n.j * n.beta * lerp(y1, y2, n.dt / DT);
             }
-            let k4psi = fpsi(y + DT * k3psi, &ydelay, x + 0.5 * DT * k3x);
+            let k4psi = fpsi(y + DT * k3psi, delayterm, x + 0.5 * DT * k3x);
             let k4x = fx(x + DT * k3x, y + DT * k3psi);
             yi.push(y + (DT / 6.) * (k1psi + 2. * k2psi + 2. * k3psi + k4psi));
             xi.push(x + (DT / 6.) * (k1x + 2. * k2x + 2. * k3x + k4x));
@@ -270,8 +269,9 @@ fn rksol(points: &Vec<C64>, neighbours: &Vec<Vec<Neighbour>>) -> (Vec<Vec<C64>>,
     (psis, xs)
 }
 
-fn plotpsisq(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>>{
-    let root_area = BitMapBackend::new("rktestpsisq.png", (1920, 1080)).into_drawing_area();
+fn plotpsisq(name: &String, psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = format!("graphs/{name}.png");
+    let root_area = BitMapBackend::new(path.as_str(), (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
 
@@ -318,8 +318,9 @@ fn plotpsisq(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>>{
     Ok(())
 }
 
-fn plotargs(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
-    let root_area = BitMapBackend::new("rktestargs.png", (1920, 1080)).into_drawing_area();
+fn plotargs(name: &String, psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = format!("graphs/{name}.png");
+    let root_area = BitMapBackend::new(path.as_str(), (1920, 1080)).into_drawing_area();
     root_area.fill(&WHITE)?;
     let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
 
@@ -363,33 +364,140 @@ fn plotargs(psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn plotenergy(name: &String, psis: &Vec<Vec<C64>>) -> Result<(), Box<dyn std::error::Error>> {
+    let path = format!("graphs/{name}.png");
+
+    let root_area = BitMapBackend::new(path.as_str(), (1920, 1080)).into_drawing_area();
+    root_area.fill(&WHITE)?;
+    let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
+    
+    if NSTEPS < 4096 {panic!("not enough values");}
+    let mut buffer = [C0; 4096];
+    for i in 0..4096 {
+        buffer[i] = psis[NSTEPS - 4096 + i].iter().sum();
+    }
+    buffer.rotate_right(2048);
+    let fft = Radix4::new(4096, FftDirection::Inverse);
+    fft.process(&mut buffer);
+    buffer.rotate_right(2048);
+    let mut es = buffer.map(|x| x.norm_sqr());
+    let esmax = es.iter().map(|x| *x).reduce(f64::max).unwrap();
+    es = es.map(|x| x/esmax);
+
+    let mut cc = ChartBuilder::on(&root_area)
+        .margin_top(0)
+        .margin_left(0)
+        .margin_right(30)
+        .margin_bottom(30)
+        .x_label_area_size(70)
+        .y_label_area_size(90)
+        .build_cartesian_2d(0.0..DE*50 as f64, 0.0..1.05)?;
+
+    cc.configure_mesh()
+        .x_desc("E [ps]")
+        .y_desc("|ψ|^2")
+        .x_labels(10)
+        .y_labels(10)
+        .axis_desc_style(("sans-serif", 40))
+        .label_style(("sans-serif", 30))
+        .draw()?;
+
+    cc.draw_series(LineSeries::new(
+            (0..50).map(|i| (i as f64 * DE, es[i + 2048])), RGBColor(255, 0, 0)))?
+        .label("Orkuróf")
+        .legend(|(x, y)| PathElement::new(vec![(x,y), (x+40, y)], ShapeStyle{color: RGBAColor(255, 0, 0, 1.0),
+                                                                             filled: true,
+                                                                             stroke_width: 2}));
+    cc.configure_series_labels().legend_area_size(75).label_font(("sans-serif", 30)).border_style(BLACK).draw()?;
+    root_area.present().expect("úps");
+    println!("plotted spectrum.");
+    Ok(())
+}
+
+fn plotgeometry(points: &Vec<C64>, name: &String) -> Result<(), Box<dyn std::error::Error>> {
+    let path = format!("graphs/{name}.png");
+    let root_area = BitMapBackend::new(path.as_str(), (1920, 1080)).into_drawing_area();
+    root_area.fill(&WHITE)?;
+    let root_area = root_area.titled("Prufa", ("sans-serif", 60))?;
+
+    let xmin = points.iter().map(|x| x.re).reduce(f64::min).unwrap();
+    let xmax = points.iter().map(|x| x.re).reduce(f64::max).unwrap();
+    let ymin = points.iter().map(|x| x.im).reduce(f64::min).unwrap();
+    let ymax = points.iter().map(|x| x.im).reduce(f64::max).unwrap();
+
+    let mut cc = ChartBuilder::on(&root_area)
+        .margin_top(0)
+        .margin_left(0)
+        .margin_right(30)
+        .margin_bottom(30)
+        .x_label_area_size(70)
+        .y_label_area_size(90)
+        .build_cartesian_2d((xmin-10.)..(xmax+10.), (ymin-10.)..(ymax+10.))?;
+
+    cc.configure_mesh()
+        .x_label_formatter(&|x| format!("{:.1}", *x))
+        .y_label_formatter(&|y| format!("{:.1}", *y))
+        .x_desc("t [ps]")
+        .y_desc("")
+        .x_labels(10)
+        .y_labels(10)
+        .axis_desc_style(("sans-serif", 40))
+        .label_style(("sans-serif", 30))
+        .draw()?;
+
+    cc.draw_series(
+            points.iter().map(|x| Circle::new((x.re, x.im), 4., RGBColor(255, 0, 0))))?;
+    println!("{}", points.len());
+    Ok(())
+}
+
+fn mkdir(s: &str) {
+    match create_dir(s) {
+        Ok(_) => (),
+        Err(e) => {
+            match e.kind() {
+                std::io::ErrorKind::AlreadyExists => (),
+                _ => panic!("{e}")
+            }
+        }
+    }
+}
 
 fn main() {
-    let points = p3filter(20., 3.9);
+    mkdir(".cache");
+    mkdir("graphs");
     let args = Args::parse();
-    if args.debugneighbours.len() != 0 {
-        let tmp = find_neighbours(&points, 20.);
-        save_neighbours_json(&args.debugneighbours, &tmp).expect("Couldn't save neighbours.");
-        return;
-    }
-    if args.cachedresults.len() != 0 {
-        let (psis, xs) = read_results(&args.cachedresults);
-    }
-    let neighbours = match args.cachedneighbours.len() {
-        0 => {
-            let tmp = find_neighbours(&points, 20.);
-            println!("Found neighbours.");
-            save_neighbours(&args.cachedneighbours, &tmp).expect("Couldn't save neighbours.");
-            tmp
-        },
-        _ => {
-            println!("Using cached neighbours.");
+
+    let points = if args.plotgeometry != ESTR  {
+        let tmp = p3filter(20., 3.9);
+        plotgeometry(&tmp, &args.plotgeometry).expect("couldn't plot geometry");
+        if args.cachedresults != ESTR || args.cachedneighbours != ESTR {vec![]}
+        else {vec![]}
+    } else if args.plotgeometry == ESTR && args.cachedresults == ESTR && args.cachedneighbours == ESTR {
+        p3filter(20., 3.9)
+    } else {vec![]};
+
+    let (psis, _) = if args.cachedresults != ESTR {
+        read_results(&args.cachedresults)
+    } else {
+        let neighbours = if args.cachedneighbours.len() != 0 {
             read_neighbours(&args.cachedneighbours)
+        } else {
+            let tmp = find_neighbours(&points, 20.);
+            save_neighbours(&args.saveneighbours, &tmp).expect("couldn't save neighbours");
+            tmp
+        };
+        if args.debugneighbours != ESTR {
+            save_neighbours_json(&args.debugneighbours, &neighbours).expect("couldn't save neighbour json.");
         }
+        let tmp = rksol(&neighbours);
+        save_results(&args.saveresults, &tmp.0, &tmp.1).expect("couldn't save results");
+        tmp
     };
-    let (psis, xs) = rksol(&points, &neighbours);
-    plotpsisq(&psis).expect("Couldn't plot square norm.");
-    plotargs(&psis).expect("Couldn't plot phase difference.");
+
+    plotpsisq(&args.psisqname, &psis).expect("Couldn't plot square norm.");
+    plotargs(&args.psiargsname, &psis).expect("Couldn't plot phase difference.");
+    plotenergy(&args.spectrumname, &psis).expect("Couldn't plot spectrum.");
 }
 
 fn fom(omega1: f64, omega2: f64, u: f64) -> f64 {
